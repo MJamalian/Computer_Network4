@@ -6,6 +6,8 @@
 typedef struct
 {
     bool is_up;
+    char src_virtual_ip[30];
+    char dst_virtual_ip[30];
     int dest_id;
 }Interface;
 
@@ -14,7 +16,7 @@ typedef struct
 typedef struct
 {
     bool is_on;
-    char virtual_ip[30];
+    int port;
     int interface_size;
     Interface interface[64];
 }Node;
