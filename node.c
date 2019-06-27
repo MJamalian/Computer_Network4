@@ -15,6 +15,7 @@
 #include  <sys/ipc.h>
 #include  <sys/shm.h>
 #include <math.h>
+#include <sys/socket.h> 
 
 #ifdef READLINE
 #include <readline/readline.h>
@@ -25,6 +26,7 @@
 #include "lnxparse.h"
 #include "shm.h"
 #include "node.h"
+#include "ip.h"
 
 Graph graph;
 int nodeNum;
@@ -32,6 +34,7 @@ int version;
 int version_fd;
 int distance[64];
 int pred[64];
+int fd;
 
 bool help_cmd(const char *line) {
     (void) line;
@@ -52,7 +55,8 @@ bool interfaces_cmd(const char *line){
     printf("id      rem             loc\n");
     for (int i = 0; i < myNode.interface_size; i++)
     {
-        printf("%d       %s     %s\n", i , myNode.interface[i].dst_virtual_ip, myNode.interface[i].src_virtual_ip);
+        if(myNode.interface[i].is_up)
+            printf("%d       %s     %s\n", i , myNode.interface[i].dst_virtual_ip, myNode.interface[i].src_virtual_ip);
     }
     return false;
 }
@@ -80,7 +84,8 @@ bool routes_cmd(const char *line){
         {
             if (distance[i]<64)
             {
-                char* src_virtual_ip = find_source(i);
+                int n = find_source(i);
+                char* src_virtual_ip = graph.node[nodeNum].interface[n].src_virtual_ip;
                 for (int j = 0; j < graph.node[i].interface_size; j++)
                 {
                     if (graph.node[i].interface[j].is_up)
@@ -92,27 +97,6 @@ bool routes_cmd(const char *line){
             
         }
     }
-    // int j, i;
-    // int n = graph.size;
-    // int startnode = nodeNum;
-    // for(i=0;i<n;i++){
-	// 	if(i!=startnode)
-	// 	{
-	// 		printf("\nDistance of node%d=%d",i,distance[i]);
-	// 		printf("\nPath=%d",i);
-			
-	// 		j=i;
-	// 		do
-	// 		{
-	// 			j=pred[j];
-	// 			printf("<-%d",j);
-	// 		}while(j!=startnode);
-	//     }
-    //     printf("\n");
-    // }
-
-
-    //dbg(DBG_ERROR, "routes_cmd: NOT YET IMPLEMENTED\n");
     return false;
 }
 
@@ -147,7 +131,6 @@ bool down_cmd(const char *line){
         printf("interface %d out of bounds : (0 to %d)\n", interface, myNode.interface_size - 1);
         return false;
     }
-    //dbg(DBG_ERROR, "down_cmd: NOT YET IMPLEMENTED\n");
     return false;
 }
 
@@ -182,35 +165,61 @@ bool up_cmd(const char *line){
         return false;
     }
     return false;
-    
-    //dbg(DBG_ERROR, "up_cmd: NOT YET IMPLEMENTED\n");
 }
 
 bool send_cmd(const char *line){
+    if (version_fd < version)
+    {
+        find_forwarding_table();
+        version_fd = version;
+    }
     char ip_string[INET_ADDRSTRLEN];
-    struct in_addr ip_addr;
-    uint8_t protocol;
-    int num_consumed;
-    char *data;
-
-    if (sscanf(line, "send %s %" SCNu8 "%n", ip_string, &protocol, &num_consumed) != 2) {
+    int protocol;
+    char data[1000];
+    if (sscanf(line, "send %s %d %s", ip_string, &protocol, &data) != 3) {
 	    dbg(DBG_ERROR, "syntax error (usage: send [ip] [protocol] [payload])\n");
 	    return false;
     }
-
-    if (inet_pton(AF_INET, ip_string, &ip_addr) == 0) {
-        dbg(DBG_ERROR, "syntax error (malformed ip address)\n");
-        return false;
-    }
-
-    data = ((char *)line) + num_consumed + 1;
-
     if (strlen(data) < 1) {
         dbg(DBG_ERROR, "syntax error (payload unspecified)\n");
         return false;
     }
-    //TODO send
-    dbg(DBG_ERROR, "send_cmd: NOT YET IMPLEMENTED\n");
+    int dest_id = find_node(ip_string);
+    if (dest_id == -1)
+    {
+        printf("There is no route to this ip\n");
+        return false;
+    }
+    if (distance[dest_id]>63)
+    {
+        printf("there is no route from here to that ip\n");
+        return false;
+    }
+    else{
+        int dest_id2 = dest_id;
+        while (pred[dest_id] != nodeNum)
+        {
+            dest_id = pred[dest_id];
+        }
+        struct sockaddr_in m;
+        memset(&m, 0, sizeof(m)); 
+        m.sin_family = AF_INET; 
+        m.sin_port = htons(graph.node[dest_id].port); 
+        m.sin_addr.s_addr = INADDR_ANY;
+        ip_packet ip_pct;
+        strncpy(ip_pct.payload, data, 1000);
+        for (int i = 0; i < graph.node[nodeNum].interface_size; i++)
+        {
+            if (graph.node[nodeNum].interface[i].dest_id == dest_id)
+            {
+                strncpy(ip_pct.source_ip, graph.node[nodeNum].interface[i].src_virtual_ip, 30);
+            }  
+        }
+        strncpy(ip_pct.dest_ip, ip_string, 30);
+        ip_pct.protocol = protocol;
+        sendto(fd,(struct IP*) &ip_pct, sizeof(ip_pct), MSG_CONFIRM, (const struct sockaddr *) &m,  sizeof(m));
+        return false;
+    }
     return false;
 }
 bool traceroute_cmd(const char *line){
@@ -224,27 +233,18 @@ bool traceroute_cmd(const char *line){
         dbg(DBG_ERROR, "syntax error (usage: traceroute [ip])\n");
         return false;
     }
-    bool out = false;
-    int dest_num = -1;
-    for (int i = 0; i < graph.size; i++)
-    {
-        for (int j = 0; j < graph.node[i].interface_size; j++)
-        {
-            if(strcmp(graph.node[i].interface[j].src_virtual_ip, ip_string) == 0){
-                out = true;
-                dest_num = i;
-                break;
-            }
-        }
-        if(out)
-            break;
-    }
+    int dest_num = find_node(ip_string);
     if(dest_num == -1){
         dbg(DBG_ERROR, "ip is not in network.\n");
         return false;
     }
     else{
         int full_distance = distance[dest_num];
+        if (full_distance>63)
+        {
+            printf("there is no route from here to that ip.\n");
+            return false;
+        }
         char route_ip[full_distance+1][30];
         int new_node_num;
         strncpy(route_ip[0], ip_string, 30);
@@ -292,13 +292,7 @@ int main(int argc, char **argv){
         dbg(DBG_ERROR, "usage: %s <linkfile>\n", argv[0]);
         return -1;
     }
-    #ifdef READLINE
-        char* line;
-        rl_bind_key('\t', rl_complete);
-    #else
-        char line[LINE_MAX];
-    #endif
-
+    char* line;
     char cmd[LINE_MAX];
     unsigned i;
     int ret;
@@ -314,67 +308,123 @@ int main(int argc, char **argv){
     version = ShmPTR->version + 1;
     ShmPTR->version = version;
     ShmPTR->graph = graph;
+    struct sockaddr_in servaddr;
+    if ( (fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) { 
+        perror("socket creation failed"); 
+        exit(EXIT_FAILURE); 
+    }
+    memset(&servaddr, 0, sizeof(servaddr)); 
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = INADDR_ANY;
+    servaddr.sin_port = htons(graph.node[nodeNum].port);
+    if ( bind(fd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0 ) 
+    { 
+        perror("bind failed"); 
+        exit(EXIT_FAILURE); 
+    }
     while (1) {
-        // printf("%d\n", ShmPTR->version);
-        // for (int i = 0; i < ShmPTR->graph.size; i++)
-        // {
-        //     printf("node %d:\n", i);
-        //     printf("is on :%d\n", ShmPTR->graph.node[i].is_on);
-        //     printf("virtual id :%s\n", ShmPTR->graph.node[i].virtual_ip);
-        //     printf("interface size :%d\n", ShmPTR->graph.node[i].interface_size);
-        //     for (int j = 0; j < ShmPTR->graph.node[i].interface_size; j++)
-        //     {
-        //         printf("interface %d:\n", j);
-        //         printf("is up :%d\n", ShmPTR->graph.node[i].interface[j].is_up);
-        //         printf("destination :%d\n", ShmPTR->graph.node[i].interface[j].dest_id);
-        //     }
-        //     printf("-------------------------------------------------------\n");
-        // }
-        
-        #ifdef READLINE
-            if (!(line = readline("> "))) break;
-        #else
-            dbg(DBG_ERROR, "> "); (void)fflush(stdout);
-            if (!fgets(line, sizeof(line), stdin)) break;
-            if (strlen(line) > 0 && line[strlen(line)-1] == '\n')
-                line[strlen(line)-1] = 0;
-        #endif
-        ret = sscanf(line, "%s", cmd);
-        if (ret != 1) {
-            if (ret != EOF) help_cmd(line);
-            continue;
+        fd_set fds;
+        int max_fds = (fd>0)?fd:0;
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        FD_SET(0, &fds);
+        if (select(max_fds + 1,&fds,NULL,NULL,NULL) == -1){
+            perror("select:");
+            exit(1);
         }
-        if (version < ShmPTR->version)
-        {
-            graph = ShmPTR->graph;
-            version = ShmPTR->version;
-        }
-        if (!strcmp(cmd, "q")) break;
-
-        for (i=0; i < sizeof(cmd_table) / sizeof(cmd_table[0]); i++){
-            if (!strcmp(cmd, cmd_table[i].command)){
-                bool change = cmd_table[i].handler(line);
-                if (change == true)
+        if(FD_ISSET(fd, &fds)){
+            if (version < ShmPTR->version)
+            {
+                graph = ShmPTR->graph;
+                version = ShmPTR->version;
+            }
+            if (version_fd < version)
+            {
+                find_forwarding_table();
+                version_fd = version;
+            }
+            int len;
+            struct sockaddr_in cliaddr;
+            memset(&cliaddr, 0, sizeof(cliaddr));
+            struct IP * temp = malloc(sizeof(struct IP));
+            recvfrom(fd, temp, sizeof(*temp),  MSG_WAITALL, ( struct sockaddr *) &cliaddr, &len);
+            char dst[30];
+            strncpy(dst, temp->dest_ip, 30);
+            bool is_dest = false;
+            for (int i = 0; i < graph.node[nodeNum].interface_size; i++)
+            {
+                if (strcmp(dst, graph.node[nodeNum].interface[i].src_virtual_ip)==0)
                 {
-                    version++;
-                    ShmPTR->version = version;
-                    ShmPTR->graph = graph;
+                    is_dest = true;
+                    if (temp->protocol == 0)
+                    {
+                        printf("----------------------------\n");
+                        printf("new packet arrived\n");
+                        printf("source: %s", temp->source_ip);
+                        printf("\ndestination: %s\n", temp->dest_ip);
+                        printf("data: %s\n", temp->payload);
+                        printf("----------------------------\n");
+                    }
+                    break;
+                } 
+            }
+            if (!is_dest)
+            {
+                int dest_id = find_node(dst);
+                if (dest_id == -1)
+                {
+                    printf("There is no route to this ip\n");
+                    continue;
                 }
-                
-                break;
+                int dest_id2 = dest_id;
+                while (pred[dest_id] != nodeNum)
+                {
+                    dest_id = pred[dest_id];
+                }
+                struct sockaddr_in m;
+                memset(&m, 0, sizeof(m)); 
+                m.sin_family = AF_INET; 
+                m.sin_port = htons(graph.node[dest_id2].port); 
+                m.sin_addr.s_addr = INADDR_ANY;
+
+                sendto(fd,(struct IP*) temp, sizeof(*temp), MSG_CONFIRM, (const struct sockaddr *) &m,  sizeof(m));
+            }
+            
+            
+        }
+        if(FD_ISSET(0, &fds)){
+            line = readline("");
+            ret = sscanf(line, "%s", cmd);
+            if (ret != 1) {
+                if (ret != EOF) help_cmd(line);
+                continue;
+            }
+            if (version < ShmPTR->version)
+            {
+                graph = ShmPTR->graph;
+                version = ShmPTR->version;
+            }
+            if (!strcmp(cmd, "q")) break;
+
+            for (i=0; i < sizeof(cmd_table) / sizeof(cmd_table[0]); i++){
+                if (!strcmp(cmd, cmd_table[i].command)){
+                    bool change = cmd_table[i].handler(line);
+                    if (change == true)
+                    {
+                        version++;
+                        ShmPTR->version = version;
+                        ShmPTR->graph = graph;
+                    }
+                    break;
+                }
+            }
+
+            if (i == sizeof(cmd_table) / sizeof(cmd_table[0])){
+                dbg(DBG_ERROR, "error: no valid command specified\n");
+                help_cmd(line);
+                continue;
             }
         }
-
-        if (i == sizeof(cmd_table) / sizeof(cmd_table[0])){
-            dbg(DBG_ERROR, "error: no valid command specified\n");
-            help_cmd(line);
-            continue;
-        }
-
-        #ifdef READLINE
-            add_history(line);
-            free(line);
-        #endif
     }
     ShmPTR->version = ShmPTR->version + 1;
     ShmPTR->graph.node[nodeNum].is_on = false;
@@ -383,9 +433,8 @@ int main(int argc, char **argv){
     shmdt(ShmPTR);
     if(delete_shared_memory){
         shmctl(ShmID,IPC_RMID,NULL);
-    } 
-    //shmctl(ShmID,IPC_RMID,NULL);
-
+    }
+    close(fd);
     printf("\nGoodbye!\n\n");
     return 0;
 }

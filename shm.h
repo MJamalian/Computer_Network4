@@ -16,6 +16,7 @@ typedef struct
 typedef struct
 {
     bool is_on;
+    char host[30];
     int port;
     int interface_size;
     Interface interface[64];
@@ -43,15 +44,5 @@ Routing_table rt = {
     .version = 0
 };
 
-typedef struct RoutingTable2
-{
-    int m ;
-    char virtual_id[30];
-    bool interfaces[64];
-}Routing_table2;
-
-Routing_table2 rt2 = {
-    .m = 0
-};
 
 #endif

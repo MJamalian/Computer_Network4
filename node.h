@@ -54,6 +54,7 @@ Graph AddNewNode(char* fileName){
                     node = graph.node[i];
                     nodeNum = i;
                     node.is_on = true;
+                    strncpy(node.host, lhost, 30);
                     check = true;
                     break;
                 }
@@ -63,6 +64,7 @@ Graph AddNewNode(char* fileName){
                 nodeNum = graph.size;
                 node.is_on = true;
                 node.port = port;
+                strncpy(node.host, lhost, 30);
                 node.interface_size = 0;
                 graph.node[nodeNum] = node;
                 graph.size++;
@@ -87,8 +89,6 @@ Graph AddNewNode(char* fileName){
             node2.is_on = false;
             node2.interface_size = 0;
             node2.port = dest_port;
-            //strncpy(node2.virtual_ip, rv, 30);
-            // node2.virtual_ip = rv;
             graph.node[graph.size] = node2;
             graph.size = graph.size + 1;
             dest_num = graph.size - 1;
@@ -101,7 +101,6 @@ Graph AddNewNode(char* fileName){
         node.interface[node.interface_size] = interface;
         node.interface_size = node.interface_size + 1;
     }
-    printf("%d\n", node.interface_size);
     graph.node[nodeNum] = node;
     return graph;
 }
@@ -188,22 +187,12 @@ void find_forwarding_table(){
             }
         } 
     }
-    //printf("hello again\n");
-    // for (int i = 0; i < graph.size; i++)
-    // {
-    //     for (int j = 0; j < graph.size; j++)
-    //     {
-    //         printf("%d ", g[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-    
     dijkstra(g);
     
 }
 
-char* find_source(int m){
-    char source_virtual_ip[30];
+int find_source(int m){
+    int source_virtual_ip = 0;
     while (pred[m] != nodeNum)
     {
         m = pred[m];
@@ -211,19 +200,30 @@ char* find_source(int m){
     for (int i = 0; i < graph.node[nodeNum].interface_size; i++)
     {
         if(graph.node[nodeNum].interface[i].dest_id == m){
-            return graph.node[nodeNum].interface[i].src_virtual_ip;
+            return i;
         }
     }
     return source_virtual_ip;
 }
 
+int find_node(char ip_string[30]){
+    for (int i = 0; i < graph.size; i++)
+    {
+        for (int j = 0; j < graph.node[i].interface_size; j++)
+        {
+            if(strcmp(graph.node[i].interface[j].src_virtual_ip, ip_string) == 0){
+                return i;
+            }
+        }
+    }
+    return -1;
+}
 
 bool is_empty(){
     for (int i = 0; i < graph.size; i++)
     {
         if (graph.node[i].is_on)
         {
-            printf("no\n");
             return false;
         }  
     }
